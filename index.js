@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 const assert = require('assert');
 const HTTP = require('http');
 const HTTP2 = require('http2');
