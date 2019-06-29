@@ -297,5 +297,4 @@ if (cluster.isMaster) {
     });
 } else {
     DB.connect().then(() => server.listen(config.port, function() { console.log(`[${process.pid}] Server running on ${config.port}`) } ));
-}
-// THIS IS SPARTA
+} // THIS IS SPARTA
