@@ -1,8 +1,9 @@
 {
   "name": "qframe",
-  "version": "0.9.0",
-  "description": "Code-centric JSON API framework",
+  "version": "0.9.1",
+  "description": "Code-centric JSON API server",
   "main": "index.js",
+  "bin": "./index.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/kig/qframe.git"
@@ -14,7 +15,8 @@
   "license": "MIT",
   "dependencies": {
     "bcrypt": "^3.0.6",
-    "mime-db": "^1.40.0",
+    "chokidar": "^3.0.1",
+    "mime": "^2.4.4",
     "nodemon": "^1.19.1",
     "pg": "^7.11.0",
     "uuid": "^3.3.2"
