@@ -135,10 +135,10 @@ module.exports = {
             res.end("Your file is safe with me, for now.");
         },
         savedFile: async (req, res) => pipeline(fs.createReadStream('saved_file.dat'), res),
-        migrationLog: async (req, res) => {
+        migrationLog: async (req, res, name) => {
             await global.guardGetWithUser(req);
             const { rows } = await global.DB.query(
-                `SELECT * FROM migration_log WHERE db_name = $1 ORDER BY id ASC`, [req.name]);
+                `SELECT * FROM migration_log WHERE db_name = $1 ORDER BY id ASC`, [name]);
             res.json(rows);
         },
         totalTaps: async (req, res) => {
