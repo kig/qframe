@@ -1,4 +1,4 @@
-# Qframe 0.9.1
+# Qframe 0.9.3
 
 Front-end friendly JSON API server in 300 lines of code.
 Ideal for use with something like `create-react-app`.
@@ -9,13 +9,14 @@ Uses PostgreSQL as the database.
 ## Features
 
  * User accounts using email & password for auth
- * User sessions
- * Users own items from item table with CRUD
- * JSON `data` field for storing user and item details
+ * User sessions that persist over server restarts
+ * User.items from item table with CRUD
+ * JSON `data` field for storing user, item and session details
  * Routing
  * DB migrations
  * Static file serving from cached memory buffers with `chokidar` change watcher
- * Multi-process cluster server with auto-restart on error (not HA though)
+ * Brotli and gzip compression, cached for static files.
+ * Multi-process cluster server (not HA though)
  * Fast server dev iteration using nodemon to restart server on changes
  * Full SQL support from `node-postgres`
  * Support for serving over HTTP, HTTPS & HTTP/2
@@ -27,14 +28,15 @@ Performance testing on a 4-core MBP, using `bombardier -n 1000000 -c 300 http://
  * `/_/items/view` DB read over HTTP/HTTPS, ~12 kreqs/s
  * Around 60k static file HTTPS reqs per second
 
-
 ## Usage
 
-Default API server, runs on port 8000.
+Start the default API server. The server runs on port 8000, connects to the PostgreSQL database `qframe`, and serves files from `./public`.
 
 ```bash
 $ createdb qframe
 $ npx qframe
+# For faster startup
+$ yarn global add qframe
 ```
 
 Open http://localhost:8000 in your browser and try out the built-in API in the console
@@ -79,12 +81,16 @@ $ npx qframe ./qframe.json # Note that you need the ./ here, the file is loaded 
 The config file is loaded using `require()`, so you can go wild. Here's an example of setting up some custom API endpoints on a localhost HTTP/2 server.
 
 ```javascript
+const fs = require('fs');
+const util = require('util');
+const pipeline = util.promisify(require('stream').pipeline);
+
 module.exports = {
     // Web server port.
     port: 8000,
 
     // Override cluster worker count.
-    // The default is the number of logical CPUs (i.e. HyperThreads).
+    // The default is the number of logical CPUs (i.e. hyperthreads).
     // workerCount: 1,
 
     // Database Pool config.
@@ -98,11 +104,11 @@ module.exports = {
     // HTTP.createServer if there's no cert or pfx, or
     // HTTP2.createSecureServer if cert or pfx is set.
     // See the node HTTP/HTTP2 docs for details.
-    cert: "localhost-cert.pem",
-    key: "localhost-privkey.pem",
-    // pfx: "localhost.pfx",
-    // passphrase: "blabla",
     allowHTTP1: true,
+    cert: fs.readFileSync("localhost-cert.pem"),
+    key: fs.readFileSync("localhost-privkey.pem"),
+    // pfx: fs.readFileSync("localhost.pfx"),
+    // passphrase: "blabla",
 
     // Called at the end of a request
     logAccess: function(req, status, elapsed) {
@@ -124,6 +130,11 @@ module.exports = {
     api: {
         hello: async (req, res) => res.json({hello: "world"}),
         echo: async (req, res) => res.end(await global.bodyAsBuffer(req)),
+        save: async (req, res) => {
+            await pipeline(req, fs.createWriteStream('saved_file.dat'));
+            res.end("Your file is safe with me, for now.");
+        },
+        savedFile: async (req, res) => pipeline(fs.createReadStream('saved_file.dat'), res),
         migrationLog: async (req, res) => {
             await global.guardGetWithUser(req);
             const { rows } = await global.DB.query(
@@ -138,6 +149,9 @@ module.exports = {
 
     // routes completely replaces the built-in routes
     // routes: { foo: (_,res) => res.end('bar') }, // check out localhost:8000/foo
+
+    // fallbackRoute is called when there's no matching route, the default is the static file server
+    // fallbackRoute: async (req, res) => res.end("what was that?"),
 
     // Which migration to go to?
     migrationTarget: 'testing testing 1-2-3',
@@ -194,3 +208,14 @@ var post = async(path, body) => (await fetch(path, {method:'POST', headers, body
 headers = await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'bar'});
 await get('/_/migrationLog/mictest')
 ```
+
+## Tuning resource limits
+
+More open files: `ulimit -n 20000` for more simultaneous connections.
+
+The `node-postgres` `Pool` creates a bunch of connections for each worker,
+`Pool` uses `10` connections per worker, unless you set the `max` property in the database config to lower this.
+The default config uses `max: 3`.
+
+On high core count systems, you might hit the default PostgreSQL `max_connections` limit of 100.
+Edit `postgresql.conf` and set `max_connections` to CPU cores * workers * `Pool` config `max`.

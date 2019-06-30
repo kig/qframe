@@ -6,6 +6,7 @@ const cluster = require('cluster');
 const { performance } = require('perf_hooks');
 const uuidv4 = require('uuid/v4');
 const bcrypt = require('bcrypt');
+const zlib = require('zlib');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
@@ -13,7 +14,7 @@ const mime = require('mime');
 const chokidar = require('chokidar');
 const numCPUs = require('os').cpus().length;
 
-const config = {port: 8000, pg: {database: 'qframe'}, root: 'public', workerCount: numCPUs, saltRounds: 10,
+const config = {port: 8000, pg: {database: 'qframe', max: 3}, root: 'public', workerCount: numCPUs, saltRounds: 10,
     ...(process.argv[2] && require(process.argv[2]) || JSON.parse(process.env.QFRAME_CONFIG || '{}'))};
 global.DB = new Pool(config.pg);
 
@@ -72,92 +73,94 @@ async function migrate(migrations, migrationTarget) {
     } catch (err) {
         await client.query('ROLLBACK');
         throw err;
-    } finally {
-        client.release();
-    }
+    } finally { client.release(); }
 }
 
 // Routing
 async function route(routeObj, req, res) {
-    const path = req.url.split(/[\/\?]/);
-    for (var i = 1; i < path.length; i++) {
+    const path = req.url.split(/[\/\?]/);   // split on / and ?
+    for (let i = 1; i < path.length; i++) { // req.url starts with /, skip the first entry
         routeObj = routeObj[path[i]];
         if (routeObj === undefined) return;
-        if (typeof routeObj === 'function') {
-            req.name = path.slice(i+1).join("/");
-            return routeObj(req, res);
-        }
+        if (typeof routeObj === 'function') 
+            return routeObj(req, res, path.slice(i+1).join("/"));
     }
 }
 
 // File serving
 global.serveDirectory = function(baseDirectory) {
     const cache = {};
-    chokidar.watch('.', {cwd: baseDirectory, ignored: /(^|[\/\\])\../}).on('all', async (_, filename) => {
+    chokidar.watch('.', {cwd: baseDirectory, ignored: /(^|[\/\\])\../}).on('all', (_, filename) => { try {
         delete cache['/'+filename];
-        fs.readFile(path.join(baseDirectory, filename), (_, buffer) =>
-            buffer && ( cache['/'+filename] = { buffer, headers: {'Content-Type': mime.getType(filename)} } ) );
-    });
+        const buffer = fs.readFileSync(path.join(baseDirectory, filename));
+        cache['/'+filename] = { buffer, headers: {'content-type': mime.getType(filename)},
+            encodings: buffer.byteLength <= 860 ? {} : {br: zlib.brotliCompress && zlib.brotliCompressSync(buffer, {params: {[zlib.constants.BROTLI_PARAM_QUALITY]: 11}}), gzip: zlib.gzipSync(buffer, {level: 9})} };
+    } catch {} });
     return async function(req, res) {
         const reqPath = req.url.split("?")[0];
         const cached = cache[reqPath] || cache[path.join(reqPath, 'index.html')];
-        if (cached) {
-            res.writeHead(200, cached.headers);
-            res.end(cached.buffer);
-        }
+        if (!cached) return;
+        if (res.targetEncoding && cached.encodings[res.targetEncoding]) res.setHeader('content-encoding', res.targetEncoding);
+        res.writeHead(200, cached.headers);
+        res.end(cached.encodings[res.targetEncoding] || cached.buffer);
     };
 }
 
 // Body JSON parsing
 HTTP.ServerResponse.prototype.json = HTTP2.Http2ServerResponse.prototype.json = function(obj, statusCode = 200) {
-    this.writeHead(statusCode, {'Content-Type': 'application/json'});
-    this.end(JSON.stringify(obj))
+    var json = Buffer.from(JSON.stringify(obj));
+    if (this.targetEncoding && json.byteLength > 0) {
+        json = this.targetEncoding === 'br' ? zlib.brotliCompressSync(json, {params: {[zlib.constants.BROTLI_PARAM_QUALITY]: 5}}) : zlib.gzipSync(json, {level: 8});
+        this.setHeader('content-encoding', this.targetEncoding);
+    }
+    this.writeHead(statusCode, {'content-type': 'application/json'});
+    this.end(json);
 };
-global.bodyAsBuffer = req => new Promise(function (resolve, reject) {
+global.bodyAsBuffer = (req, maxLen=10e6) => new Promise(function (resolve, reject) {
     var index = 0, buffer = Buffer.allocUnsafe(4096);
     req.on('data', function(b) {
         index += b.byteLength;
+        if (index > maxLen) reject(Error('413: Body too large'));
         if (index > buffer.byteLength) {
             buffer = Buffer.allocUnsafe(1 << Math.ceil(Math.log2(index)));
             buffer.set(buffer);
-        }
+        } // this is ~O(N) in length of request
         buffer.set(b, index - b.byteLength); });
     req.on('end', function() { resolve(buffer.slice(0, index)) });
-    req.on('error', reject)
-});
-global.bodyAsString = async req => (await bodyAsBuffer(req)).toString(); 
-global.bodyAsJson = async req => JSON.parse(await bodyAsBuffer(req));
+    req.on('error', reject); });
+global.bodyAsString = async (req, maxLen=1e6) => (await bodyAsBuffer(req, maxLen)).toString(); 
+global.bodyAsJson = async (req, maxLen=1e6) => JSON.parse(await bodyAsBuffer(req, maxLen));
 
 // Authorization & CSRF guards
-global.guardPostWithSession = async function guardPostWithSession(req) {
+global.guardPostWithSession = async function(req) {
     assert(req.method === 'POST', "405: Only POST accepted");
     const session = await sessionGet(req);
     assert(session, '401: User session invalid, please re-authenticate');
     assert(req.headers.csrf === session.csrf, '401: Invalid CSRF token, please re-authenticate');
-    return session
+    return session;
 }
-global.guardGetWithUser = async function guardGetWithUser(req) {
+global.guardGetWithUser = async function(req) {
     const session = await sessionGet(req);
     assert(session, '401: User session invalid, please re-authenticate');
-    return session.user_id
+    return session.user_id;
 }
-global.guardPostWithUserAndJson = async function guardPostWithUserAndJson(req) {
+global.guardPostWithUserAndJson = async function(req) {
     const sessionP = guardPostWithSession(req); // Run these two concurrently
     const jsonP = bodyAsJson(req);
-    return {user: (await sessionP).user_id, json: await jsonP}
+    return {user: (await sessionP).user_id, json: await jsonP};
 }
 
 // Session management
-const sessionCreate = async (id) => 
-    (await DB.query('INSERT INTO sessions (user_id, csrf) VALUES ($1, $2) RETURNING *', [id, uuidv4()])).rows[0];
+const sessionCreate = async (userId) => 
+    (await DB.query('INSERT INTO sessions (user_id, csrf) VALUES ($1, $2) RETURNING *', [userId, uuidv4()])).rows[0];
 const sessionGet = async (req) =>
     (await DB.query('SELECT * FROM sessions WHERE id = $1', [req.headers['session']])).rows[0];
-const sessionDelete = async (id, user_idId) =>
-    (await DB.query('DELETE FROM sessions WHERE id = $1 AND user_id = $2', [id, user_idId])).rowCount > 0;
-const sessionDeleteAll = async (user_idId) =>
-    (await DB.query('DELETE FROM sessions WHERE user_id = $1', [user_idId])).rowCount;
-const sessionList = async (user_idId) =>
-    (await DB.query(`SELECT id AS session, csrf, created_time, updated_time, data FROM sessions WHERE user_id = $1 ORDER BY created_time ASC`, [user_idId])).rows;
+const sessionDelete = async (id, userId) =>
+    (await DB.query('DELETE FROM sessions WHERE id = $1 AND user_id = $2', [id, userId])).rowCount > 0;
+const sessionDeleteAll = async (userId) =>
+    (await DB.query('DELETE FROM sessions WHERE user_id = $1', [userId])).rowCount;
+const sessionList = async (userId) =>
+    (await DB.query(`SELECT id AS session, csrf, created_time, updated_time, data FROM sessions WHERE user_id = $1 ORDER BY created_time ASC`, [userId])).rows;
 
 // User accounts
 const user = {
@@ -245,10 +248,10 @@ const items = {
             FROM items c, users u  WHERE c.user_id = $1 AND u.id = c.user_id ORDER BY created_time ASC`, [user]);
         res.json(rows);
     },
-    view: async function(req, res) {
-        assert(req.name, "404: No id provided");
+    view: async function(req, res, name) {
+        assert(name, "404: No id provided");
         const { rows } = await DB.query(`SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
-            FROM items c, users u WHERE c.id = $1 AND u.id = c.user_id`, [req.name]);
+            FROM items c, users u WHERE c.id = $1 AND u.id = c.user_id`, [name]);
         assert(rows[0], '404: Item not found');
         res.json(rows[0]);
     },
@@ -269,32 +272,29 @@ const items = {
     }
 };
 
-// Routes
-const routes = config.routes || { _: {items, user, ...config.api} };
-const staticFile = serveDirectory(config.root);
-
-// HTTP Server
-const serverConfig = {...config, cert: config.cert && fs.readFileSync(config.cert), key: config.key && fs.readFileSync(config.key)};
-const server = (config.cert || config.pfx ? HTTP2.createSecureServer : HTTP.createServer)(serverConfig, async function(req, res) {
-    const t0 = performance.now();
-    try {
-        await route(routes, req, res);
-        if (!res.finished) await staticFile(req, res);
-        assert(res.finished, "404: Route not found");
-    } catch({message}) {
-        const status = parseInt(message.slice(0,3)) || 500;
-        config.logError && config.logError(req, status, message);
-        res.json({status, message}, status);
-    }
-    config.logAccess && config.logAccess(req, res.statusCode, performance.now() - t0);
-});
-
 // Cluster
 if (cluster.isMaster) {
     migrate(migrations, config.migrationTarget).then(() => {
-        for (let i = 0, l = config.workerCount; i < l; i++) cluster.fork();
-        cluster.on('exit', (worker, code, signal) => cluster.fork());
-    });
+        for (let i = 0; i < config.workerCount; i++) cluster.fork(); });
 } else {
-    DB.connect().then(() => server.listen(config.port, function() { console.log(`[${process.pid}] Server running on ${config.port}`) } ));
+    // Routes
+    const routes = config.routes || { _: {items, user, ...config.api} };
+    const fallbackRoute = config.fallbackRoute || serveDirectory(config.root);
+
+    // HTTP Server
+    const encRe = zlib.brotliCompress ? /\b(br|gzip)\b/g : /\bgzip\b/g; 
+    (config.cert || config.pfx ? HTTP2.createSecureServer : HTTP.createServer)(config, async function(req, res) {
+        const t0 = performance.now();
+        try {
+            res.targetEncoding = ((req.headers['accept-encoding'] || '').match(encRe) || []).sort()[0];
+            await route(routes, req, res);
+            if (!res.finished) await fallbackRoute(req, res);
+            assert(res.finished, "404: Route not found");
+        } catch({message}) {
+            const status = parseInt(message.slice(0,3)) || 500;
+            config.logError && config.logError(req, status, message, performance.now() - t0);
+            res.json({status, message}, status);
+        }
+        config.logAccess && config.logAccess(req, res.statusCode, performance.now() - t0);
+    }).listen(config.port, () => console.log(`[${process.pid}] Server running on ${config.port}`));
 } // THIS IS SPARTA
