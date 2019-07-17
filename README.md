@@ -245,11 +245,11 @@ Edit `postgresql.conf` and set `max_connections` to `1000`.
 ## Changelog
 
 ### 0.10.0
-    * Changed `bcrypt` to `bcryptjs` for less troublesome install.
-    * Removed `nodemon` from dependencies.
-    * Documented the source. [Read it](https://github.com/kig/qframe/blob/master/index.js)?
-    * Changed to cookie-based authentication with `HttpOnly` cookies with optional `Secure`.
-    * CORS headers for local networks, nice for running a CRA dev server on :3000 and an API server on :8000
-    * JSON object shape validation.
-    * Changed /_/user/edit to be a single endpoint rather than a subtree.
+ * Changed `bcrypt` to `bcryptjs` for less troublesome install.
+ * Removed `nodemon` from dependencies.
+ * Documented the source. [Read it](https://github.com/kig/qframe/blob/master/index.js)?
+ * Changed to cookie-based authentication with `HttpOnly` cookies with optional `Secure`.
+ * CORS headers for local networks, nice for running a CRA dev server on :3000 and an API server on :8000
+ * JSON object shape validation.
+ * Changed /_/user/edit to be a single endpoint rather than a subtree.
     
