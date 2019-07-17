@@ -1,4 +1,4 @@
-# Qframe 0.9.4
+# Qframe 0.10.0
 
 Front-end friendly JSON API server in 300 lines of code.
 Ideal for use with something like `create-react-app`.
@@ -21,6 +21,7 @@ Uses PostgreSQL as the database.
  * Full SQL support from `node-postgres`
  * Support for serving over HTTP, HTTPS & HTTP/2
  * Config from file or env var
+ * JSON shape validation
 
 Performance testing on a 4-core MBP, using `bombardier -n 1000000 -c 300 http://localhost:8000/`
 
