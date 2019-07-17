@@ -1,4 +1,4 @@
-# Qframe 0.9.3
+# Qframe 0.9.4
 
 Front-end friendly JSON API server in 300 lines of code.
 Ideal for use with something like `create-react-app`.
@@ -47,7 +47,7 @@ var get = async(path) => (await fetch(path, {headers})).json();
 var post = async(path, body) => (await fetch(path, {method:'POST', headers, body: JSON.stringify(body)})).json();
 var user = await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'bar'});
 headers = await post('/_/user/authenticate', {email: 'foo@bar', password: 'bar'});
-var userData = await post('/_/user/edit/data', {avatar: "pirate", favouriteQuote: "Pinata Pirata!"});
+var userData = await post('/_/user/edit', {data: {avatar: "pirate", favouriteQuote: "Pinata Pirata!"}});
 var {id} = await post('/_/items/create', {name: "My wonderful item", wonderfulness: 9999});
 var item = await get(`/_/items/view/${id}`);
 await post('/_/items/edit', {id, data: {name: "My wonderful item", wonderfulness: 10000}})
@@ -62,7 +62,8 @@ $ git clone https://github.com/kig/qframe
 $ cd qframe
 $ createdb qframe
 $ yarn
-$ yarn nodemon .
+[$ yarn global add nodemon]
+$ npx nodemon .
 # Edit index.js to customize your server
 ```
 
@@ -205,8 +206,27 @@ Then navigate to https://localhost:8000 and run the following in the console:
 var headers = {};
 var get = async(path) => (await fetch(path, {headers})).json();
 var post = async(path, body) => (await fetch(path, {method:'POST', headers, body: JSON.stringify(body)})).json();
-headers = await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'bar'});
-await get('/_/migrationLog/mictest')
+await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'barbeque'});
+headers = post('/_/user/authenticate', {email:'foo@bar', password: 'barbeque'});
+await get('/_/migrationLog/mictest');
+```
+
+## Use with [Create-React-App](https://github.com/facebook/create-react-app) 
+
+```bash
+$ mkdir my_project
+$ cd my_project
+# Create React App in frontend
+$ npx create-react-app frontend
+$ yarn start 
+# In another shell
+$ cd my_project
+$ $EDITOR qframe-config.js
+$ npx qframe ./qframe-config.js
+# In yet another shell
+$ cd my_project/frontend
+$ $EDITOR src/App.js # Call API endpoints on http://localhost:8000 with credentials: 'include'
+$ echo "You should write a full example" | mail -s "Qframe + CRA" hei@heichen.hk
 ```
 
 ## Tuning resource limits
@@ -217,5 +237,18 @@ The `node-postgres` `Pool` creates a bunch of connections for each worker,
 `Pool` uses `10` connections per worker, unless you set the `max` property in the database config to lower this.
 The default config uses `max: 3`.
 
-On high core count systems, you might hit the default PostgreSQL `max_connections` limit of 100.
-Edit `postgresql.conf` and set `max_connections` to CPU cores * workers * `Pool` config `max`.
+On high core count systems, you might hit the default PostgreSQL `max_connections` limit of `100`.
+Edit `postgresql.conf` and set `max_connections` to `1000`.
+
+
+## Changelog
+
+### 0.10.0
+    * Changed `bcrypt` to `bcryptjs` for less troublesome install.
+    * Removed `nodemon` from dependencies.
+    * Documented the source. [Read it](https://github.com/kig/qframe/blob/master/index.js)?
+    * Changed to cookie-based authentication with `HttpOnly` cookies with optional `Secure`.
+    * CORS headers for local networks, nice for running a CRA dev server on :3000 and an API server on :8000
+    * JSON object shape validation.
+    * Changed /_/user/edit to be a single endpoint rather than a subtree.
+    

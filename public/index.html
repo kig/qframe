@@ -10,14 +10,15 @@
 var headers = {};
 var get = async(path) => (await fetch(path, {headers})).json();
 var post = async(path, body) => (await fetch(path, {method:'POST', headers, body: JSON.stringify(body)})).json();
-var user = await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'bar'});
-headers = await post('/_/user/authenticate', {email: 'foo@bar', password: 'bar'});
-var userData = await post('/_/user/edit/data', {avatar: "pirate", favouriteQuote: "Pinata Pirata!"});
+var user = await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'barbeque'});
+headers = await post('/_/user/authenticate', {email: 'foo@bar', password: 'barbeque', rememberme: true});
+var userData = await post('/_/user/edit', {data: {avatar: "pirate", favouriteQuote: "Pinata Pirata!"}});
 var {id} = await post('/_/items/create', {name: "My wonderful item", wonderfulness: 9999});
 var item = await get(`/_/items/view/${id}`);
 await post('/_/items/edit', {id, data: {name: "My wonderful item", wonderfulness: 10000}})
 var items = await get(`/_/items/list`);
-console.log(user, headers, userData, item, items);
+var logout = await post('/_/user/logoutAll');
+console.log(user, headers, userData, item, items, logout);
         </pre>
     </body>
 </html>

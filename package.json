@@ -1,6 +1,6 @@
 {
   "name": "qframe",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "Code-centric JSON API server",
   "main": "index.js",
   "bin": "./index.js",
@@ -14,10 +14,9 @@
   "author": "Ilmari Heikkinen <hei@heichen.hk>",
   "license": "MIT",
   "dependencies": {
-    "bcrypt": "^3.0.6",
-    "chokidar": "^3.0.1",
+    "bcryptjs": "^2.4.3",
+    "chokidar": "^3.0.2",
     "mime": "^2.4.4",
-    "nodemon": "^1.19.1",
     "pg": "^7.11.0",
     "uuid": "^3.3.2"
   }
