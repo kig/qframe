@@ -50,8 +50,8 @@ const migrations = config.replaceMigrations || [{                               
 // Items
 const items = {                                                                                      // The items tree is mounted to /_/items by default. The items API endpoints are used to CRUD items.
     create: async function(req, res) {                                                               // Create a new item. POST {"data": {"foo":"bar"}} to /_/items/create
-        const {session: {user_id}, json} = await guardPostWithSessionAndJson(req);                   // You need to be authenticated to use this. Pass item data as a JSON string in your POST request.
-        assert(isObject(json), '400: The json parameter needs to be an object.');
+        const { user_id } = await guardPostWithSession(req);                                         // You need to be authenticated to use this. Pass item data as a JSON string in your POST request.
+        const json = assert(isObject(await bodyAsJson(req)), '400: Parameter not an object.');       // The item data is an arbitrary JSON object.
         const { rows: [item] } = await DB.query('INSERT INTO items (data, user_id) VALUES ($1, $2) RETURNING id, data, created_time, updated_time', [json, user_id]); // Create an item owned by you with the given data.
         res.json(item);                                                                              // Send the created item to the client as JSON.
     },
@@ -69,15 +69,15 @@ const items = {                                                                 
         res.json(item);                                                                              // Send the item to the client as JSON.
     },
     edit: async function(req, res) {                                                                 // Edit item data. POST {"id": "itemId", "data": {"foo":"bar"}} to /_/items/edit
-        const {session: {user_id}, json} = await guardPostWithSessionAndJson(req);                   // You need to be authenticated to use this. And parse the request body JSON too.
-        const {id, data} = assertShape({id:isStrlen(36,36), data:isObject}, json);                   // Please give me id and data from json.
+        const { user_id } = await guardPostWithSession(req);                                         // You need to be authenticated to use this. And parse the request body JSON too.
+        const {id, data} = assertShape({id:isStrlen(36,36), data:isObject}, await bodyAsJson(req));  // Please give me id and data from json.
         const { rows: [item] } = await DB.query('UPDATE items SET data = $1 WHERE id = $2 AND user_id = $3 RETURNING id, data, created_time, updated_time', [data, id, user_id]); // Update the item row and return the edited item.
         assert(item, '404: Item not found');                                                         // Oh yeah, the item id needs to be valid and you need to be the owner of the item.
         res.json(item);                                                                              // Send the edited item to the client as JSON.
     },
     delete: async function(req, res) {                                                               // Delete an item you own. POST {"id": "itemId"} to /_/items/delete
-        const {session: {user_id}, json} = await guardPostWithSessionAndJson(req);                   // Authenticated POST endpoint. Parse the request body as JSON.
-        const { id } = assertShape({id:isStrlen(36,36)}, json);                                      // I only delete a single specific item, identified by the id.
+        const { user_id } = await guardPostWithSession(req);                                         // Authenticated POST endpoint. Parse the request body as JSON.
+        const { id } = assertShape({id:isStrlen(36,36)}, await bodyAsJson(req));                     // I only delete a single specific item, identified by the id.
         const { rowCount } = await DB.query('DELETE FROM items WHERE id = $1 AND user_id = $2', [id, user_id]); // Delete items that you own and that have the requested id.
         assert(rowCount > 0, '404: Item not found');                                                 // There should be one row deleted. Or more if our item ids aren't unique.
         res.json({deleted: rowCount});                                                               // Send how many items we deleted to the client as JSON.
@@ -128,10 +128,12 @@ const user = {                                                                  
         res.json(user);                                                                              // Here you go, a JSON of you. Unless you deleted yourself right before the DB query. In which case you're undefined.
     },
     edit: async function(req, res) {                                                                 // Edit user. POST {"name"?, "email"?, "password"?, "data"?} to /_/user/edit
-        const {session: {user_id}, json} = await guardPostWithSessionAndJson(req);                   // To edit, you need to be logged in and POST some JSON.
-        const { name, email, password, data } = assertShape({name:isMaybe(isStrlen(3,72)), email:isMaybe(isEmail), password:isMaybe(isStrlen(8,72)), data:isMaybe(isObject)}, json); // Pull out the request params from the JSON.
-        const passwordHash = password && await bcrypt.hash(json.password, saltRounds);               // If you're changing your password, we need to hash it for the database.
-        const { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, password), name = COALESCE($4, name) WHERE id = $5 RETURNING email, data', [data, email, passwordHash, name, user_id]); // Update the fields that have changed, use previous values where not.
+        const { user_id } = await guardPostWithSession(req);                                         // To edit, you need to be logged in and POST some JSON.
+        const { name, email, password, newPassword, data } = assertShape({name:isMaybe(isStrlen(3,72)), email:isMaybe(isEmail), password:isMaybe(isStrlen(8,72)), newPassword:isMaybe(isStrlen(8,72)), data:isMaybe(isObject)}, await bodyAsJson(req)); // Pull out the request params from the JSON.
+        const passwordHash = password && await bcrypt.hash(password, saltRounds);                    
+        const newPasswordHash = newPassword && await bcrypt.hash(newPassword, saltRounds);           // If you're changing your password, we need to hash it for the database.
+        assert(!newPassword || (password && newPassword), '400: Provide the existing password too');
+        const { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, newPassword), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', [data, email, newPasswordHash, name, user_id, passwordHash]); // Update the fields that have changed, use previous values where not.
         res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
     }
 };
@@ -148,11 +150,6 @@ global.guardGetWithSession = async function(req) {                              
     const session = await sessionGet(req);                                                           // Get the session for the request.
     assert(session, '401: User session invalid, please re-authenticate');                            // The session should exist.
     return session;                                                                                  // Here's the session, you're probably gonna need it.
-}
-global.guardPostWithSessionAndJson = async function(req) {                                           // POST request with a valid session and a JSON body.
-    const sessionP = guardPostWithSession(req);                                                      // Validate POST and session.
-    const jsonP = bodyAsJson(req);                                                                   // Parse the request body as JSON.
-    return {session: await sessionP, json: await jsonP};                                             // Return the session and the parsed json object. Runs the session validation and body parsing concurrently.
 }
 
 // Session management
@@ -180,7 +177,6 @@ async function migrate(migrations, migrationTarget) {                           
         var { rows: [migrationStatus] } = await client.query('SELECT * FROM migration WHERE db_name = $1', [client.database]); // Get the migration status.
         if (!migrationStatus)                                                                        // No migration status. Try creating one.
             var { rows: [migrationStatus] } = await client.query("INSERT INTO migration (db_name) VALUES ($1) RETURNING *", [client.database]); // Create the migration status!
-        assert(migrationStatus, 'Unable to create migration status database');                       // Oh well, sometimes you can't create migrations status. ROLLBACK!
         for (let i = migrationStatus.latest_index; i > targetMigrationIndex; i--) {                  // If the migration target is below current migration, we need to roll back some migrations.
             await client.query(migrations[i].down);                                                  // Take down a migration.
             await client.query('INSERT INTO migration_log (db_name, name, direction, query, index) VALUES ($1, $2, $3, $4, $5)', [client.database, migrations[i].name, 'down', migrations[i].down, i]); // Log what we've done to the database.
