@@ -132,7 +132,8 @@ const user = {                                                                  
         const { name, email, password, newPassword, data } = assertShape({name:isMaybe(isStrlen(3,72)), email:isMaybe(isEmail), password:isMaybe(isStrlen(8,72)), newPassword:isMaybe(isStrlen(8,72)), data:isMaybe(isObject)}, await bodyAsJson(req)); // Pull out the request params from the JSON.
         const passwordHash = password && await bcrypt.hash(password, saltRounds);                    
         const newPasswordHash = newPassword && await bcrypt.hash(newPassword, saltRounds);           // If you're changing your password, we need to hash it for the database.
-        assert(!newPassword || (password && newPassword), '400: Provide the existing password too');
+        assert(!newPassword || password, '400: Provide password to set new password');               // Require existing password when changing password.
+        assert(!email || password, '400: Provide password to set new email');                        // Require password when changing email address.
         const { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, newPassword), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', [data, email, newPasswordHash, name, user_id, passwordHash]); // Update the fields that have changed, use previous values where not.
         res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
     }
