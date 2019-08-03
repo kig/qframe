@@ -7,7 +7,7 @@ const { performance } = require('perf_hooks');                                  
 const uuidv4 = require('uuid/v4');                                                                   // UUIDv4 generates random UUIDs and doesn't have deps.
 const bcrypt = require('bcryptjs');                                                                  // Bcryptjs doesn't have deps, doesn't require compiling extensions, and doesn't support unsafe memory access. 
 const zlib = require('zlib');                                                                        // Compress responses, built-in.
-const { Pool } = require('pg');                                                                      // node-postgres for talking to PostgreSQL databases, quite light on deps, pgpass and pg-connection-string are third-party, semver is by npm.
+const { Client } = require('quickgres');                                                             // quickgres for talking to PostgreSQL databases, no deps, 400 lines of code.
 const fs = require('fs');                                                                            // Read files for file serving, built-in.
 const path = require('path');                                                                        // Join file paths for file serving, built-in.
 const mime = require('mime');                                                                        // File extension mimetype lookup for file serving, one dep and that's by the author.
@@ -15,9 +15,10 @@ const chokidar = require('chokidar');                                           
 const numCPUs = require('os').cpus().length;                                                         // The number of hardware threads on the system.
 global.getOwnProperty = (o,p) => Object.prototype.hasOwnProperty.call(o, p) ? o[p] : undefined;      // If o hasOwnProperty p return o[p], otherwise return undefined.
 
-const config = {port: 8000, pg: {database: 'qframe', max: 3}, root: 'public', workerCount: numCPUs, saltRounds: 10, // Default config.
+const config = {port: 8000, pg: {user: process.env.USER, database: 'qframe'}, root: 'public', workerCount: numCPUs/2, saltRounds: 10, // Default config.
+    logError: (req, status, error, elapsed) => { console.error(status, error); },
     ...(process.argv[2] && require(process.argv[2]) || JSON.parse(process.env.QFRAME_CONFIG || '{}'))}; // Extend the config by requiring a config file or using the config in an env var.
-global.DB = new Pool(config.pg);                                                                     // Create the database connection pool.
+global.DB = new Client(config.pg);                                                                   // Create the database connection pool.
 
 // Migrations
 const migrations = config.replaceMigrations || [{                                                    // Initialize the database either with config.replaceMigrations or the default tables.
@@ -51,28 +52,39 @@ const migrations = config.replaceMigrations || [{                               
 const items = {                                                                                      // The items tree is mounted to /_/items by default. The items API endpoints are used to CRUD items.
     create: async function(req, res) {                                                               // Create a new item. POST {"data": {"foo":"bar"}} to /_/items/create
         const { user_id } = await guardPostWithSession(req);                                         // You need to be authenticated to use this. Pass item data as a JSON string in your POST request.
-        const json = assert(isObject(await bodyAsJson(req)), '400: Parameter not an object.');       // The item data is an arbitrary JSON object.
-        const { rows: [item] } = await DB.query('INSERT INTO items (data, user_id) VALUES ($1, $2) RETURNING id, data, created_time, updated_time', [json, user_id]); // Create an item owned by you with the given data.
+        const json = await bodyAsJson(req);
+        assert(isObject(json), '400: Parameter not an object.');       // The item data is an arbitrary JSON object.
+        let { rows: [item] } = await DB.query('INSERT INTO items (data, user_id) VALUES ($1, $2) RETURNING id, data, created_time, updated_time', [JSON.stringify(json), user_id]); // Create an item owned by you with the given data.
+        item = item.toObject();
+        item.data = item.data ? JSON.parse(item.data) : null;
         res.json(item);                                                                              // Send the created item to the client as JSON.
     },
     list: async function(req, res) {                                                                 // List your items. GET from /_/items/list
         const { user_id } = await guardGetWithSession(req);                                          // You need to be authenticated to list the items.
         const { rows } = await DB.query(`SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
             FROM items c, users u  WHERE c.user_id = $1 AND u.id = c.user_id ORDER BY created_time ASC`, [user_id]); // Get all the items for the logged in user. 
-        res.json(rows);                                                                              // Send the items to the client as JSON.
+        res.json(rows.map(r => {
+            r = r.toObject();
+            r.data = (r.data ? JSON.parse(r.data) : null);
+            return r;
+        }));                                                                              // Send the items to the client as JSON.
     },
     view: async function(req, res, itemId) {                                                         // View a single item. GET /_/items/view/item-id-uuid-string. Doesn't require authentication.
         assert(itemId, "404: No id provided");                                                       // You need to tell me which item you want to see.
-        const { rows: [item] } = await DB.query(`SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
+        let { rows: [item] } = await DB.query(`SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
             FROM items c, users u WHERE c.id = $1 AND u.id = c.user_id`, [itemId]);                  // Get the item from the database.
         assert(item, '404: Item not found');                                                         // If you give me a bad itemId, I will 404 you.
+        item = item.toObject();
+        item.data = item.data ? JSON.parse(item.data) : null;
         res.json(item);                                                                              // Send the item to the client as JSON.
     },
     edit: async function(req, res) {                                                                 // Edit item data. POST {"id": "itemId", "data": {"foo":"bar"}} to /_/items/edit
         const { user_id } = await guardPostWithSession(req);                                         // You need to be authenticated to use this. And parse the request body JSON too.
         const {id, data} = assertShape({id:isStrlen(36,36), data:isObject}, await bodyAsJson(req));  // Please give me id and data from json.
-        const { rows: [item] } = await DB.query('UPDATE items SET data = $1 WHERE id = $2 AND user_id = $3 RETURNING id, data, created_time, updated_time', [data, id, user_id]); // Update the item row and return the edited item.
+        let { rows: [item] } = await DB.query('UPDATE items SET data = $1 WHERE id = $2 AND user_id = $3 RETURNING id, data, created_time, updated_time', [JSON.stringify(data), id, user_id]); // Update the item row and return the edited item.
         assert(item, '404: Item not found');                                                         // Oh yeah, the item id needs to be valid and you need to be the owner of the item.
+        item = item.toObject();
+        item.data = item.data ? JSON.parse(item.data) : null;
         res.json(item);                                                                              // Send the edited item to the client as JSON.
     },
     delete: async function(req, res) {                                                               // Delete an item you own. POST {"id": "itemId"} to /_/items/delete
@@ -106,7 +118,7 @@ const user = {                                                                  
     },
     sessions: async function(req, res) {                                                             // List sessions. GET from /_/user/sessions
         const { user_id } = await guardGetWithSession(req);                                          // You need to be authenticated for this, but you don't need POST here.
-        res.json(await sessionList(user_id));                                                        // Get your list of sessions as JSON.
+        res.json((await sessionList(user_id)).map(s => s.toObject()));                                                        // Get your list of sessions as JSON.
     },
     logout: async function(req, res) {                                                               // Log out. Authenticated POST to /_/user/logout with optional {"session": "sessionId"}.
         const session = await guardPostWithSession(req);                                             // This should be an POST request with a valid session.
@@ -124,17 +136,35 @@ const user = {                                                                  
     },
     view: async function(req, res) {                                                                 // View user details. Includes email and the JSON data object. GET from /_/user/view
         const { user_id } = await guardGetWithSession(req);                                          // You need to be logged in to view your details.
-        const { rows: [user] } = await DB.query('SELECT email, created_time, updated_time, data FROM users WHERE id = $1', [user_id]); // Read the user details from the database.
+        let { rows: [userRow] } = await DB.query('SELECT email, created_time, updated_time, data FROM users WHERE id = $1', [user_id]); // Read the user details from the database.
+        user = user.toObject();
+        user.data = user.data ? JSON.parse(user.data) : null;
         res.json(user);                                                                              // Here you go, a JSON of you. Unless you deleted yourself right before the DB query. In which case you're undefined.
     },
     edit: async function(req, res) {                                                                 // Edit user. POST {"name"?, "email"?, "password"?, "data"?} to /_/user/edit
         const { user_id } = await guardPostWithSession(req);                                         // To edit, you need to be logged in and POST some JSON.
         const { name, email, password, newPassword, data } = assertShape({name:isMaybe(isStrlen(3,72)), email:isMaybe(isEmail), password:isMaybe(isStrlen(8,72)), newPassword:isMaybe(isStrlen(8,72)), data:isMaybe(isObject)}, await bodyAsJson(req)); // Pull out the request params from the JSON.
+        if (!(name || email || newPassword)) {
+            assert(data, '400: Provide something to edit');
+            let { rows: [user] } = await DB.query('UPDATE users SET data = $1 WHERE id = $2 RETURNING email, data', [JSON.stringify(data), user_id]);
+            user = user.toObject();
+            user.data = user.data ? JSON.parse(user.data) : null;
+            res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
+            return;
+        }
         const passwordHash = password && await bcrypt.hash(password, saltRounds);                    
         const newPasswordHash = newPassword && await bcrypt.hash(newPassword, saltRounds);           // If you're changing your password, we need to hash it for the database.
         assert(!newPassword || password, '400: Provide password to set new password');               // Require existing password when changing password.
         assert(!email || password, '400: Provide password to set new email');                        // Require password when changing email address.
-        const { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, newPassword), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', [data, email, newPasswordHash, name, user_id, passwordHash]); // Update the fields that have changed, use previous values where not.
+        let { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, password), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', 
+            [data ? JSON.stringify(data) : null, 
+            email || null, 
+            newPasswordHash || null, 
+            name || null, 
+            user_id, 
+            passwordHash || null]); // Update the fields that have changed, use previous values where not.
+        user = user.toObject();
+        user.data = user.data ? JSON.parse(user.data) : null;
         res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
     }
 };
@@ -157,7 +187,7 @@ global.guardGetWithSession = async function(req) {                              
 const sessionCreate = async (userId) =>                                                              // Create new session for userId and return it.
     (await DB.query('INSERT INTO sessions (user_id, csrf) VALUES ($1, $2) RETURNING *', [userId, uuidv4()])).rows[0]; // Insert session into database with new CSRF.
 const sessionGet = async (req) =>                                                                    // Get session from request.
-    (await DB.query('SELECT * FROM sessions WHERE id = $1', [req.cookies.session])).rows[0];         // Find session defined in the session cookie and return it.
+    req.cookies.session ? (await DB.query('SELECT * FROM sessions WHERE id = $1', [req.cookies.session])).rows[0] : undefined;         // Find session defined in the session cookie and return it.
 const sessionDelete = async (id, userId) =>                                                          // Delete a session.
     (await DB.query('DELETE FROM sessions WHERE id = $1 AND user_id = $2', [id, userId])).rowCount > 0; // Delete the session with the given id and owner.
 const sessionDeleteAll = async (userId) =>                                                           // Delete all sessions of userId.
@@ -169,30 +199,30 @@ const sessionList = async (userId) =>                                           
 async function migrate(migrations, migrationTarget) {                                                // Migrate the database to migrationTarget in migrations.
     var targetMigrationIndex = migrations.findIndex(m => m.name === migrationTarget);                // Find the index of the migration named migrationTarget.
     if (targetMigrationIndex === -1) targetMigrationIndex = migrationTarget === 0 ? migrationTarget : (migrationTarget || migrations.length-1); // If there's no migration to be found, treat migrationTarget as an index, or go to the last migration.
-    const client = await DB.connect();                                                               // Grab a single connection from the pool for the migration transaction.
+    const client = global.DB;                                                                        // Grab a single connection from the pool for the migration transaction.
     try {                                                                                            // This might not work because I may have made a mistake in writing SQL. In which case we should ROLLBACK.
-        console.log(`Migration target`, [ client.database, targetMigrationIndex, (migrations[targetMigrationIndex] || {name:'EMPTY'}).name ]); // Where are we going?
+        console.log(`Migration target`, [ client.config.database, targetMigrationIndex, (migrations[targetMigrationIndex] || {name:'EMPTY'}).name ]); // Where are we going?
         await client.query('BEGIN');                                                                 // Start migration transaction!
         await client.query(`CREATE TABLE IF NOT EXISTS migration (db_name TEXT NOT NULL PRIMARY KEY UNIQUE, latest_index INT NOT NULL DEFAULT -1, latest_name TEXT )`); // First time setup, create tables to keep track of current migration.
         await client.query(`CREATE TABLE IF NOT EXISTS migration_log (id SERIAL PRIMARY KEY, db_name TEXT, created_time TIMESTAMP DEFAULT NOW(), name TEXT, direction TEXT, query TEXT, index INT );`); // First time setup, create log of actions taken during migrations.
-        var { rows: [migrationStatus] } = await client.query('SELECT * FROM migration WHERE db_name = $1', [client.database]); // Get the migration status.
+        var { rows: [migrationStatus] } = await client.query('SELECT * FROM migration WHERE db_name = $1', [client.config.database]); // Get the migration status.
         if (!migrationStatus)                                                                        // No migration status. Try creating one.
-            var { rows: [migrationStatus] } = await client.query("INSERT INTO migration (db_name) VALUES ($1) RETURNING *", [client.database]); // Create the migration status!
-        for (let i = migrationStatus.latest_index; i > targetMigrationIndex; i--) {                  // If the migration target is below current migration, we need to roll back some migrations.
+            var { rows: [migrationStatus] } = await client.query("INSERT INTO migration (db_name) VALUES ($1) RETURNING *", [client.config.database]); // Create the migration status!
+        for (let i = parseInt(migrationStatus.latest_index); i > targetMigrationIndex; i--) {                  // If the migration target is below current migration, we need to roll back some migrations.
             await client.query(migrations[i].down);                                                  // Take down a migration.
-            await client.query('INSERT INTO migration_log (db_name, name, direction, query, index) VALUES ($1, $2, $3, $4, $5)', [client.database, migrations[i].name, 'down', migrations[i].down, i]); // Log what we've done to the database.
+            await client.query('INSERT INTO migration_log (db_name, name, direction, query, index) VALUES ($1, $2, $3, $4, $5)', [client.config.database, migrations[i].name, 'down', migrations[i].down, i.toString()]); // Log what we've done to the database.
         }                                                                                            // Migrations have been rolled back if needed.
         for (let i = migrationStatus.latest_index+1; i <= targetMigrationIndex; i++) {               // If the migration target is above current migration, let's up the unapplied migrations. 
             await client.query(migrations[i].up);                                                    // Bring up a migration.
-            await client.query('INSERT INTO migration_log (db_name, name, direction, query, index) VALUES ($1, $2, $3, $4, $5)', [client.database, migrations[i].name, 'up', migrations[i].up, i]); // Log what we have done to the database.
+            await client.query('INSERT INTO migration_log (db_name, name, direction, query, index) VALUES ($1, $2, $3, $4, $5)', [client.config.database, migrations[i].name, 'up', migrations[i].up, i.toString()]); // Log what we have done to the database.
         }                                                                                            // Migrations have been applied if needed.
-        await client.query('UPDATE migration SET latest_index = $1, latest_name = $2', [targetMigrationIndex, (migrations[targetMigrationIndex] || {}).name]); // Update migration status to match our actions.
+        await client.query('UPDATE migration SET latest_index = $1, latest_name = $2', [targetMigrationIndex.toString(), (migrations[targetMigrationIndex] || {}).name]); // Update migration status to match our actions.
         await client.query('COMMIT');                                                                // Commit the migrations. Hooray!
-        console.log((migrationStatus.latest_index === targetMigrationIndex) ? 'Migration already on target' : 'Migration COMMIT'); // Here's what I have done (or haven't done, more often.)
+        console.log((parseInt(migrationStatus.latest_index) === targetMigrationIndex) ? 'Migration already on target' : 'Migration COMMIT'); // Here's what I have done (or haven't done, more often.)
     } catch (err) {                                                                                  // I made a mistake in my SQL, please don't leave the database in a broken state.
         await client.query('ROLLBACK');                                                              // Roll back the transaction!
         throw err;                                                                                   // Pass the error on, we need to stop the program!
-    } finally { client.release(); }                                                                  // Oh let go of the database client, don't leak it.
+    }
 }                                                                                                    // Our migrations have been applied and all is well under the moon.
 
 // File serving
@@ -261,37 +291,40 @@ async function route(routeObj, req, res) {                                      
 }
 
 // Cluster
-if (cluster.isMaster) {                                                                              // The cluster master migrates the DB and starts the workers.
-    migrate(migrations, config.migrationTarget).then(() => {                                         // Migrate the DB to config.migrationTarget.
-        for (let i = 0; i < config.workerCount; i++) cluster.fork(); });                             // Start config.workerCount HTTP server workers.
-} else {                                                                                             // The cluster workers start HTTP servers on config.port and deal with all the hard work.
-    // Routes
-    const routes = config.routes || { _: {items, user, ...config.api} };                             // Route to either config.routes or the default routes extended with config.api. These are under /_/ for create-react-app service worker compatibility.
-    const fallbackRoute = config.fallbackRoute || serveDirectory(config.root);                       // If no route is found, pass the request to config.fallbackRoute or the static file server rooted at config.root.
+global.DB.connect('/tmp/.s.PGSQL.5432').then(() => {
+    if (cluster.isMaster) {                                                                              // The cluster master migrates the DB and starts the workers.
+        migrate(migrations, config.migrationTarget).then(() => {                                         // Migrate the DB to config.migrationTarget.
+            for (let i = 0; i < config.workerCount; i++) cluster.fork(); });                             // Start config.workerCount HTTP server workers.
+    } else { // The cluster workers start HTTP servers on config.port and deal with all the hard work.
+            // Routes
+            const routes = config.routes || { _: {items, user, ...config.api} };                             // Route to either config.routes or the default routes extended with config.api. These are under /_/ for create-react-app service worker compatibility.
+            const fallbackRoute = config.fallbackRoute || serveDirectory(config.root);                       // If no route is found, pass the request to config.fallbackRoute or the static file server rooted at config.root.
 
-    // HTTP Server
-    const encRe = zlib.brotliCompress ? /\b(br|gzip)\b/g : /\bgzip\b/g;                              // Figure out what accept-encoding values to support
-    const localNetRegExp = /^https?:\/\/((192\.168|172\.(1[6-9]|2\d|3[01]))(\.\d{1,3}){2}|10(\.\d{1,3}){3}|localhost|.*\.local)(:\d+)?$/; // Matches 192.168.0.0, 172.16-31.0.0, 10.0.0.0, localhost and *.local.
-    (config.cert||config.pfx ? HTTP2.createSecureServer : HTTP.createServer)(config, async function (req, res) { // Start a HTTP2 server if the config has SSL keys, otherwise start a HTTP server
-        const t0 = performance.now();                                                                // Let's time the request!
-        if (localNetRegExp.test(req.headers.origin)) {                                               // If the browser says a local net page is doing the request.
-            res.setHeader('Access-Control-Allow-Origin', req.headers.origin);                        // Allow the local net page to CORS it.
-            res.setHeader('Access-Control-Allow-Headers', 'csrf');                                   // Need to be able to pass the csrf header for POSTs.
-            res.setHeader('Access-Control-Allow-Credentials', 'true');                               // And the cookie for session authentication.
-        }
-        req.cookies = {};                                                                            // Let's monkey-patch the request object with a cookie hashtable!
-        let match, cookieRe = /([^\s=;]+)\s*=\s*"?([^;"\s]+)/g;                                      // Cookie parser matches key=token; key="token"; ...
-        while (match = cookieRe.exec(req.headers.cookie || '')) req.cookies[match[1]] = match[2];    // Assign parsed cookie values to req.cookies.
-        res.targetEncoding = ((req.headers['accept-encoding'] || '').match(encRe) || []).sort()[0];  // Prefer br, followed by gzip.
-        try {                                                                                        // Try to handle the request, or fall back to an error response.
-            await route(routes, req, res);                                                           // Try to handle the request with the routes object.
-            if (!res.finished) await fallbackRoute(req, res);                                        // Fall back to static file serving or a configured fallback handler.
-            assert(res.finished, "404: Route not found");                                            // No route matched, you win a 404.
-        } catch(error) {                                                                             // If you throw inside a request handler, it's converted to a HTTP error response.
-            const status = parseInt(error.message.slice(0,3)) || 500;                                // If the error message starts with a number, use that as the status code.
-            res.json({status, message: error.message}, status);                                      // Send the HTTP error message to the client.
-            config.logError && config.logError(req, status, error, performance.now() - t0);          // Log the error by calling config.logError.
-        }                                                                                            // The request has been processed, the client has been sent a response.
-        config.logAccess && config.logAccess(req, res.statusCode, performance.now() - t0);           // Log the request by calling config.logAccess.
-    }).listen(config.port, () => console.log(`[${process.pid}] Server running on ${config.port}`));  // Start the server on config.port.
-}                                                                                                    // THIS IS SPARTA
+            // HTTP Server
+            const encRe = zlib.brotliCompress ? /\b(br|gzip)\b/g : /\bgzip\b/g;                              // Figure out what accept-encoding values to support
+            const localNetRegExp = /^https?:\/\/((192\.168|172\.(1[6-9]|2\d|3[01]))(\.\d{1,3}){2}|10(\.\d{1,3}){3}|localhost|.*\.local)(:\d+)?$/; // Matches 192.168.0.0, 172.16-31.0.0, 10.0.0.0, localhost and *.local.
+            (config.cert||config.pfx ? HTTP2.createSecureServer : HTTP.createServer)(config, async function (req, res) { // Start a HTTP2 server if the config has SSL keys, otherwise start a HTTP server
+                const t0 = performance.now();                                                                // Let's time the request!
+                if (localNetRegExp.test(req.headers.origin)) {                                               // If the browser says a local net page is doing the request.
+                    res.setHeader('Access-Control-Allow-Origin', req.headers.origin);                        // Allow the local net page to CORS it.
+                    res.setHeader('Access-Control-Allow-Headers', 'csrf');                                   // Need to be able to pass the csrf header for POSTs.
+                    res.setHeader('Access-Control-Allow-Credentials', 'true');                               // And the cookie for session authentication.
+                }
+                req.cookies = {};                                                                            // Let's monkey-patch the request object with a cookie hashtable!
+                let match, cookieRe = /([^\s=;]+)\s*=\s*"?([^;"\s]+)/g;                                      // Cookie parser matches key=token; key="token"; ...
+                while (match = cookieRe.exec(req.headers.cookie || '')) req.cookies[match[1]] = match[2];    // Assign parsed cookie values to req.cookies.
+                res.targetEncoding = ((req.headers['accept-encoding'] || '').match(encRe) || []).sort()[0];  // Prefer br, followed by gzip.
+                try {                                                                                        // Try to handle the request, or fall back to an error response.
+                    await route(routes, req, res);                                                           // Try to handle the request with the routes object.
+                    if (!res.finished) await fallbackRoute(req, res);                                        // Fall back to static file serving or a configured fallback handler.
+                    assert(res.finished, "404: Route not found");                                            // No route matched, you win a 404.
+                } catch(error) {                                                                             // If you throw inside a request handler, it's converted to a HTTP error response.
+                    const status = parseInt(error.message.slice(0,3)) || 500;                                // If the error message starts with a number, use that as the status code.
+                    config.logError && config.logError(req, status, error, performance.now() - t0);          // Log the error by calling config.logError.
+                    res.json({status, message: error.message}, status);                                      // Send the HTTP error message to the client.
+                }                                                                                            // The request has been processed, the client has been sent a response.
+                config.logAccess && config.logAccess(req, res.statusCode, performance.now() - t0);           // Log the request by calling config.logAccess.
+            }).listen(config.port, () => console.log(`[${process.pid}] Server running on ${config.port}`));  // Start the server on config.port.
+    }
+});
+// THIS IS SPARTA
