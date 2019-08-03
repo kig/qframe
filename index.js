@@ -136,7 +136,7 @@ const user = {                                                                  
     },
     view: async function(req, res) {                                                                 // View user details. Includes email and the JSON data object. GET from /_/user/view
         const { user_id } = await guardGetWithSession(req);                                          // You need to be logged in to view your details.
-        let { rows: [userRow] } = await DB.query('SELECT email, created_time, updated_time, data FROM users WHERE id = $1', [user_id]); // Read the user details from the database.
+        let { rows: [user] } = await DB.query('SELECT email, created_time, updated_time, data FROM users WHERE id = $1', [user_id]); // Read the user details from the database.
         user = user.toObject();
         user.data = user.data ? JSON.parse(user.data) : null;
         res.json(user);                                                                              // Here you go, a JSON of you. Unless you deleted yourself right before the DB query. In which case you're undefined.
@@ -148,7 +148,7 @@ const user = {                                                                  
             assert(data, '400: Provide something to edit');
             let { rows: [user] } = await DB.query('UPDATE users SET data = $1 WHERE id = $2 RETURNING email, data', [JSON.stringify(data), user_id]);
             user = user.toObject();
-            user.data = user.data ? JSON.parse(user.data) : null;
+            user.data = user.data && JSON.parse(user.data);
             res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
             return;
         }
@@ -157,14 +157,9 @@ const user = {                                                                  
         assert(!newPassword || password, '400: Provide password to set new password');               // Require existing password when changing password.
         assert(!email || password, '400: Provide password to set new email');                        // Require password when changing email address.
         let { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, password), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', 
-            [data ? JSON.stringify(data) : null, 
-            email || null, 
-            newPasswordHash || null, 
-            name || null, 
-            user_id, 
-            passwordHash || null]); // Update the fields that have changed, use previous values where not.
+            [data && JSON.stringify(data), email, newPasswordHash, name, user_id, passwordHash]);    // Update the fields that have changed, use previous values where not.
         user = user.toObject();
-        user.data = user.data ? JSON.parse(user.data) : null;
+        user.data = user.data && JSON.parse(user.data);
         res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
     }
 };

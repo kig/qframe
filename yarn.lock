@@ -100,10 +100,10 @@ picomatch@^2.0.4:
   resolved "https://registry.yarnpkg.com/picomatch/-/picomatch-2.0.7.tgz#514169d8c7cd0bdbeecc8a2609e34a7163de69f6"
   integrity sha512-oLHIdio3tZ0qH76NybpeneBhYVj0QFTfXEFTc/B3zKQspYfYYkWYgFsmzo+4kvId/bQRcNkVeguI3y+CD22BtA==
 
-quickgres@^0.3.0:
-  version "0.3.0"
-  resolved "https://registry.yarnpkg.com/quickgres/-/quickgres-0.3.0.tgz#8cf06b7fb499af852329a562f2a392c250e2e300"
-  integrity sha512-xA9Kqm7k7LtRM9prynJKXGSkMKQwbVIYhUyAiC/+A6IHBr3PcCe5E7mzqPlYVaVGN875QMK77Mmcx9SY7reJ+Q==
+quickgres@^0.3.1:
+  version "0.3.1"
+  resolved "https://registry.yarnpkg.com/quickgres/-/quickgres-0.3.1.tgz#a379830b1db46fe331a93f00e4dc3c4ff9a64a9a"
+  integrity sha512-J5iFrTblnmD66H/7XhisK42fjzJ4Acd/jDSOcijYjgC9ayYHNhqGh2qFNLIqsWW20XTtIT7TEkbSVcL6ji9XbQ==
 
 readdirp@^3.1.1:
   version "3.1.1"
