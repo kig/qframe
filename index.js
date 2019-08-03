@@ -51,7 +51,8 @@ const migrations = config.replaceMigrations || [{                               
 const items = {                                                                                      // The items tree is mounted to /_/items by default. The items API endpoints are used to CRUD items.
     create: async function(req, res) {                                                               // Create a new item. POST {"data": {"foo":"bar"}} to /_/items/create
         const { user_id } = await guardPostWithSession(req);                                         // You need to be authenticated to use this. Pass item data as a JSON string in your POST request.
-        const json = assert(isObject(await bodyAsJson(req)), '400: Parameter not an object.');       // The item data is an arbitrary JSON object.
+        const json = await bodyAsJson(req); // Read in item data JSON.
+        assert(isObject(json), '400: Parameter not an object.');                                     // The item data is an arbitrary JSON object.
         const { rows: [item] } = await DB.query('INSERT INTO items (data, user_id) VALUES ($1, $2) RETURNING id, data, created_time, updated_time', [json, user_id]); // Create an item owned by you with the given data.
         res.json(item);                                                                              // Send the created item to the client as JSON.
     },
@@ -134,7 +135,7 @@ const user = {                                                                  
         const newPasswordHash = newPassword && await bcrypt.hash(newPassword, saltRounds);           // If you're changing your password, we need to hash it for the database.
         assert(!newPassword || password, '400: Provide password to set new password');               // Require existing password when changing password.
         assert(!email || password, '400: Provide password to set new email');                        // Require password when changing email address.
-        const { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, newPassword), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', [data, email, newPasswordHash, name, user_id, passwordHash]); // Update the fields that have changed, use previous values where not.
+        const { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, password), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', [data, email, newPasswordHash, name, user_id, passwordHash]); // Update the fields that have changed, use previous values where not.
         res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
     }
 };
