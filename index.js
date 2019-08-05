@@ -218,11 +218,12 @@ global.serveDirectory = function(baseDirectory) {                               
 }
 
 Client.prototype.queryTo = async function(res, query, values) {
-    return (await this.query(query, values, Client.BINARY, true, new DBPassThrough(res))).end();
+    return await (await this.query(query, values, Client.BINARY, true, new DBPassThrough(res))).end();
 };
 class DBPassThrough {
     constructor(dst) {
         this.dst = dst;
+        this.dataPipe = dst;
         this.needToWriteRowParser = true;
         this.needToWriteHeader = true;
         this.buffer = [];
@@ -235,18 +236,39 @@ class DBPassThrough {
         }
         this.buffer.push(buf); // Push writes to output buffer.
         this.bufferLength += buf.byteLength; // Keep track of how much stuff we've got buffered. 
-        if (this.bufferLength >= 65536) { // Buffer 2^16 bytes before doing a write.
-            if (this.needToWriteHeader) {
-                this.dst.writeHead(200, {'content-type': 'application/x-postgres'});
-                this.needToWriteHeader = false;
-            }
-            this.dst.write(Buffer.concat(this.buffer.splice(0))); // Concat and empty the buffer array, and write the result buffer to destination stream.
+        if (this.bufferLength >= 65536) { // Buffer rows before doing a write.
+            this.writeHeadIfNeeded(); // Write the header and create compression data pipes if needed.
+            this.dataPipe.write(Buffer.concat(this.buffer.splice(0))); // Concat and empty the buffer array, and write the result buffer to destination stream.
+            if (this.dataPipe !== this.dst) this.dataPipe.flush();
             this.bufferLength = 0; // Reset buffer length byte counter.
         }
     }
+    writeHeadIfNeeded() {
+        if (!this.needToWriteHeader) return;
+        if (this.dst.targetEncoding && this.bufferLength > 860) {
+            if (this.dst.targetEncoding === 'br') this.dataPipe = zlib.createBrotliCompress({params: {[zlib.constants.BROTLI_PARAM_QUALITY]: 5}})
+            else this.dataPipe = zlib.createGzip({level: 8});
+            this.dst.setHeader('content-encoding', this.dst.targetEncoding);                                     // Tell the client what kind of compression we're using.
+        }
+        this.dst.writeHead(200, {'content-type': 'application/x-postgres'});
+        if (this.dst !== this.dataPipe) this.dataPipe.pipe(this.dst);
+        this.needToWriteHeader = false;
+    }
     end() {
-        if (this.needToWriteHeader) this.dst.writeHead(200, {'content-type': 'application/x-postgres'});
-        return this.dst.end(Buffer.concat(this.buffer.splice(0))); // Write out the rest of the buffer.
+        this.writeHeadIfNeeded();
+        this.dataPipe.write(Buffer.concat(this.buffer.splice(0)));
+        return new Promise((resolve, reject) => {
+            if (this.dataPipe === this.dst) {
+                this.dst.end();
+                resolve();
+            } else {
+                this.dataPipe.flush();
+                this.dataPipe.end(() => {
+                    this.dst.end();
+                    resolve();
+                });
+            }
+        });
     }
 }
 
