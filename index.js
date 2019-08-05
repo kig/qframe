@@ -58,10 +58,10 @@ const items = {                                                                 
             [JSON.stringify(json), user_id]); // Create an item owned by you with the given data.
     },
     list: async function(req, res) {                                                                 // List your items. GET from /_/items/list
-        const { user_id } = await guardGetWithSession(req);                                          // You need to be authenticated to list the items.
         await DB.queryTo(res, `SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
-            FROM items c, users u  WHERE c.user_id = $1 AND u.id = c.user_id ORDER BY created_time ASC`, 
-            [user_id]); // Get all the items for the logged in user.
+            FROM items c, users u, sessions s 
+            WHERE s.id = $1 AND u.id = s.user_id AND c.user_id = s.user_id`, 
+            [req.cookies.session]); // Get all the items for the logged in user.
     },
     view: async function(req, res, itemId) {                                                         // View a single item. GET /_/items/view/item-id-uuid-string. Doesn't require authentication.
         assert(itemId, "404: No id provided");                                                       // You need to tell me which item you want to see.
