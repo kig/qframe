@@ -15,7 +15,7 @@ const chokidar = require('chokidar');                                           
 const numCPUs = require('os').cpus().length;                                                         // The number of hardware threads on the system.
 global.getOwnProperty = (o,p) => Object.prototype.hasOwnProperty.call(o, p) ? o[p] : undefined;      // If o hasOwnProperty p return o[p], otherwise return undefined.
 
-const config = {port: 8000, pg: {user: process.env.USER, database: 'qframe'}, root: 'public', workerCount: numCPUs/2, saltRounds: 10, // Default config.
+const config = {port: 8000, pgport: '/tmp/.s.PGSQL.5432', pg: {user: process.env.USER, database: 'qframe'}, root: 'public', workerCount: numCPUs/2, saltRounds: 10, // Default config.
     logError: (req, status, error, elapsed) => { console.error(status, error); },
     ...(process.argv[2] && require(process.argv[2]) || JSON.parse(process.env.QFRAME_CONFIG || '{}'))}; // Extend the config by requiring a config file or using the config in an env var.
 global.DB = new Client(config.pg);                                                                   // Create the database connection pool.
@@ -54,38 +54,26 @@ const items = {                                                                 
         const { user_id } = await guardPostWithSession(req);                                         // You need to be authenticated to use this. Pass item data as a JSON string in your POST request.
         const json = await bodyAsJson(req);
         assert(isObject(json), '400: Parameter not an object.');       // The item data is an arbitrary JSON object.
-        let { rows: [item] } = await DB.query('INSERT INTO items (data, user_id) VALUES ($1, $2) RETURNING id, data, created_time, updated_time', [JSON.stringify(json), user_id]); // Create an item owned by you with the given data.
-        item = item.toObject();
-        item.data = item.data ? JSON.parse(item.data) : null;
-        res.json(item);                                                                              // Send the created item to the client as JSON.
+        await DB.queryTo(res, 'INSERT INTO items (data, user_id) VALUES ($1, $2) RETURNING id, data, created_time, updated_time', 
+            [JSON.stringify(json), user_id]); // Create an item owned by you with the given data.
     },
     list: async function(req, res) {                                                                 // List your items. GET from /_/items/list
         const { user_id } = await guardGetWithSession(req);                                          // You need to be authenticated to list the items.
-        const { rows } = await DB.query(`SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
-            FROM items c, users u  WHERE c.user_id = $1 AND u.id = c.user_id ORDER BY created_time ASC`, [user_id]); // Get all the items for the logged in user. 
-        res.json(rows.map(r => {
-            r = r.toObject();
-            r.data = (r.data ? JSON.parse(r.data) : null);
-            return r;
-        }));                                                                              // Send the items to the client as JSON.
+        await DB.queryTo(res, `SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
+            FROM items c, users u  WHERE c.user_id = $1 AND u.id = c.user_id ORDER BY created_time ASC`, 
+            [user_id]); // Get all the items for the logged in user.
     },
     view: async function(req, res, itemId) {                                                         // View a single item. GET /_/items/view/item-id-uuid-string. Doesn't require authentication.
         assert(itemId, "404: No id provided");                                                       // You need to tell me which item you want to see.
-        let { rows: [item] } = await DB.query(`SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
-            FROM items c, users u WHERE c.id = $1 AND u.id = c.user_id`, [itemId]);                  // Get the item from the database.
-        assert(item, '404: Item not found');                                                         // If you give me a bad itemId, I will 404 you.
-        item = item.toObject();
-        item.data = item.data ? JSON.parse(item.data) : null;
-        res.json(item);                                                                              // Send the item to the client as JSON.
+        await DB.queryTo(res, `SELECT c.id, c.data, c.created_time, c.updated_time, u.name AS username
+            FROM items c, users u WHERE c.id = $1 AND u.id = c.user_id`, 
+            [itemId]); // Get the item from the database.
     },
     edit: async function(req, res) {                                                                 // Edit item data. POST {"id": "itemId", "data": {"foo":"bar"}} to /_/items/edit
         const { user_id } = await guardPostWithSession(req);                                         // You need to be authenticated to use this. And parse the request body JSON too.
         const {id, data} = assertShape({id:isStrlen(36,36), data:isObject}, await bodyAsJson(req));  // Please give me id and data from json.
-        let { rows: [item] } = await DB.query('UPDATE items SET data = $1 WHERE id = $2 AND user_id = $3 RETURNING id, data, created_time, updated_time', [JSON.stringify(data), id, user_id]); // Update the item row and return the edited item.
-        assert(item, '404: Item not found');                                                         // Oh yeah, the item id needs to be valid and you need to be the owner of the item.
-        item = item.toObject();
-        item.data = item.data ? JSON.parse(item.data) : null;
-        res.json(item);                                                                              // Send the edited item to the client as JSON.
+        await DB.queryTo(res, 'UPDATE items SET data = $1 WHERE id = $2 AND user_id = $3 RETURNING id, data, created_time, updated_time',
+            [JSON.stringify(data), id, user_id]); // Update the item row and return the edited item.
     },
     delete: async function(req, res) {                                                               // Delete an item you own. POST {"id": "itemId"} to /_/items/delete
         const { user_id } = await guardPostWithSession(req);                                         // Authenticated POST endpoint. Parse the request body as JSON.
@@ -102,8 +90,7 @@ const user = {                                                                  
         assert(req.method === 'POST', "405: Only POST accepted");                                    // Yes, you need to POST this request.
         const { email, password, name } = assertShape({email:isEmail, password:isStrlen(8,72), name:isStrlen(3,72)}, await bodyAsJson(req)); // The JSON body should have email, password and name.
         const passwordHash = await bcrypt.hash(password, config.saltRounds);                         // Let's not save plaintext passwords in the database. Bcrypt it!
-        await DB.query('INSERT INTO users (email, password, name) VALUES ($1, $2, $3)', [email, passwordHash, name]); // Save the user info in the database and return the new user id.
-        res.json({email, name});                                                                     // Hey ma'am, you're registered now. Have your name and email back.
+        await DB.queryTo(res, 'INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING email, name', [email, passwordHash, name]); // Save the user info in the database and return the new user id.
     },
     authenticate: async function(req, res) {                                                         // Authenticate! Create a session! POST {"email", "password", "rememberme"?: bool} to /_/user/authenticate
         assert(req.method === 'POST', "405: Only POST accepted");                                    // You need to POST to authenticate.
@@ -136,31 +123,22 @@ const user = {                                                                  
     },
     view: async function(req, res) {                                                                 // View user details. Includes email and the JSON data object. GET from /_/user/view
         const { user_id } = await guardGetWithSession(req);                                          // You need to be logged in to view your details.
-        let { rows: [user] } = await DB.query('SELECT email, created_time, updated_time, data FROM users WHERE id = $1', [user_id]); // Read the user details from the database.
-        user = user.toObject();
-        user.data = user.data ? JSON.parse(user.data) : null;
-        res.json(user);                                                                              // Here you go, a JSON of you. Unless you deleted yourself right before the DB query. In which case you're undefined.
+        await DB.queryTo(res, 'SELECT email, created_time, updated_time, data FROM users WHERE id = $1', [user_id]); // Read the user details from the database.
     },
     edit: async function(req, res) {                                                                 // Edit user. POST {"name"?, "email"?, "password"?, "data"?} to /_/user/edit
         const { user_id } = await guardPostWithSession(req);                                         // To edit, you need to be logged in and POST some JSON.
         const { name, email, password, newPassword, data } = assertShape({name:isMaybe(isStrlen(3,72)), email:isMaybe(isEmail), password:isMaybe(isStrlen(8,72)), newPassword:isMaybe(isStrlen(8,72)), data:isMaybe(isObject)}, await bodyAsJson(req)); // Pull out the request params from the JSON.
         if (!(name || email || newPassword)) {
             assert(data, '400: Provide something to edit');
-            let { rows: [user] } = await DB.query('UPDATE users SET data = $1 WHERE id = $2 RETURNING email, data', [JSON.stringify(data), user_id]);
-            user = user.toObject();
-            user.data = user.data && JSON.parse(user.data);
-            res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
-            return;
+            await DB.queryTo(res, 'UPDATE users SET data = $1 WHERE id = $2 RETURNING email, data', [JSON.stringify(data), user_id]);
+        } else {
+            const passwordHash = password && await bcrypt.hash(password, saltRounds);                    
+            const newPasswordHash = newPassword && await bcrypt.hash(newPassword, saltRounds);           // If you're changing your password, we need to hash it for the database.
+            assert(!newPassword || password, '400: Provide password to set new password');               // Require existing password when changing password.
+            assert(!email || password, '400: Provide password to set new email');                        // Require password when changing email address.
+            await DB.queryTo(res, 'UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, password), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', 
+                [data && JSON.stringify(data), email, newPasswordHash, name, user_id, passwordHash]);    // Update the fields that have changed, use previous values where not.
         }
-        const passwordHash = password && await bcrypt.hash(password, saltRounds);                    
-        const newPasswordHash = newPassword && await bcrypt.hash(newPassword, saltRounds);           // If you're changing your password, we need to hash it for the database.
-        assert(!newPassword || password, '400: Provide password to set new password');               // Require existing password when changing password.
-        assert(!email || password, '400: Provide password to set new email');                        // Require password when changing email address.
-        let { rows: [user] } = await DB.query('UPDATE users SET data = COALESCE($1, data), email = COALESCE($2, email), password = COALESCE($3, password), name = COALESCE($4, name) WHERE id = $5 AND password = COALESCE($6, password) RETURNING email, data', 
-            [data && JSON.stringify(data), email, newPasswordHash, name, user_id, passwordHash]);    // Update the fields that have changed, use previous values where not.
-        user = user.toObject();
-        user.data = user.data && JSON.parse(user.data);
-        res.json(user);                                                                              // If everything worked out fine, return the edited user. Otherwise you'll get a 500 (say, with clashing emails or names.)
     }
 };
 
@@ -239,6 +217,39 @@ global.serveDirectory = function(baseDirectory) {                               
     };                                                                                               // The client has been served with a file if one was found.
 }
 
+Client.prototype.queryTo = async function(res, query, values) {
+    return (await this.query(query, values, Client.BINARY, true, new DBPassThrough(res))).end();
+};
+class DBPassThrough {
+    constructor(dst) {
+        this.dst = dst;
+        this.needToWriteRowParser = true;
+        this.needToWriteHeader = true;
+        this.buffer = [];
+        this.bufferLength = 0;
+    }
+    write(buf) {
+        if (this.needToWriteRowParser) { // The first write is either a RowDescription, or if not, we have a cached rowParser.
+            if (this.rowParser) this.buffer.push(this.rowParser.buf);
+            this.needToWriteRowParser = false;
+        }
+        this.buffer.push(buf); // Push writes to output buffer.
+        this.bufferLength += buf.byteLength; // Keep track of how much stuff we've got buffered. 
+        if (this.bufferLength >= 65536) { // Buffer 2^16 bytes before doing a write.
+            if (this.needToWriteHeader) {
+                this.dst.writeHead(200, {'content-type': 'application/x-postgres'});
+                this.needToWriteHeader = false;
+            }
+            this.dst.write(Buffer.concat(this.buffer.splice(0))); // Concat and empty the buffer array, and write the result buffer to destination stream.
+            this.bufferLength = 0; // Reset buffer length byte counter.
+        }
+    }
+    end() {
+        if (this.needToWriteHeader) this.dst.writeHead(200, {'content-type': 'application/x-postgres'});
+        return this.dst.end(Buffer.concat(this.buffer.splice(0))); // Write out the rest of the buffer.
+    }
+}
+
 // Body JSON parsing
 HTTP.ServerResponse.prototype.json = HTTP2.Http2ServerResponse.prototype.json = function(obj, statusCode=200, headers=undefined) { // Let's monkey-patch the HTTP response object for easier JSON responses! Turns obj into JSON and sends that in the response, using the given statusCode and extra headers if any.
     var json = Buffer.from(JSON.stringify(obj));                                                     // Turn obj into a Buffer of JSON.
@@ -286,8 +297,9 @@ async function route(routeObj, req, res) {                                      
 }
 
 // Cluster
-global.DB.connect('/tmp/.s.PGSQL.5432').then(() => {
+global.DB.connect(config.pgport, config.pghost).then(() => {
     if (cluster.isMaster) {                                                                              // The cluster master migrates the DB and starts the workers.
+        console.error('Cluster starting', new Date().toString());
         migrate(migrations, config.migrationTarget).then(() => {                                         // Migrate the DB to config.migrationTarget.
             for (let i = 0; i < config.workerCount; i++) cluster.fork(); });                             // Start config.workerCount HTTP server workers.
     } else { // The cluster workers start HTTP servers on config.port and deal with all the hard work.

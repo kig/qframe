@@ -8,14 +8,28 @@
         <p>Now try pulling up the console for some API antics</p>
 <pre>
 var headers = {};
-var get = async(path) => (await fetch(path, {headers})).json();
-var post = async(path, body) => (await fetch(path, {method:'POST', headers, body: JSON.stringify(body)})).json();
-var user = await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'barbeque'});
+var parseRes = async(res) => {
+    if (res.status !== 200) throw Error("Response failed: " + res.status + " " +  res.statusText);
+    const mime = res.headers.get('content-type');
+    if (mime === 'application/json') return res.json();
+    else if (mime === 'application/x-postgres') {
+        const arrayBuffer = await res.arrayBuffer();
+        const client = new Client(1);
+        client.onData(arrayBuffer);
+        return client.stream.rows.map(r => r.toObject());
+    } else if (/^text/.test(mime)) return res.text();
+    else return res.arrayBuffer();
+}
+var get = async(path) => parseRes(await fetch(path, {headers}));
+var post = async(path, body) => parseRes(await fetch(path, {method:'POST', headers, body: JSON.stringify(body)}));
+var user;
+try { user = await post('/_/user/create', {email:'foo@bar', name: 'foo', password: 'barbeque'}); }
+catch(err) { console.error(err); }
 headers = await post('/_/user/authenticate', {email: 'foo@bar', password: 'barbeque', rememberme: true});
-var userData = await post('/_/user/edit', {data: {avatar: "pirate", favouriteQuote: "Pinata Pirata!"}});
-var userInfo = await get('/_/user/view');
-var {id} = await post('/_/items/create', {name: "My wonderful item", wonderfulness: 9999});
-var item = await get(`/_/items/view/${id}`);
+var [userData] = await post('/_/user/edit', {data: {avatar: "pirate", favouriteQuote: "Pinata Pirata!"}});
+var [userInfo] = await get('/_/user/view');
+var [{id}] = await post('/_/items/create', {name: "My wonderful item", wonderfulness: 9999});
+var [item] = await get(`/_/items/view/${id}`);
 await post('/_/items/edit', {id, data: {name: "My wonderful item", wonderfulness: 10000}})
 var items = await get(`/_/items/list`);
 await post('/_/items/delete', {id});
@@ -27,5 +41,8 @@ var sessions = await get('/_/user/sessions');
 var logoutAll = await post('/_/user/logoutAll');
 console.log(user, headers, userData, userInfo, item, items, logout, sessions, logoutAll);
 </pre>
+
+    <script src="buffer.min.js"></script>
+    <script src="quickgres.frontend.js"></script>
     </body>
 </html>
