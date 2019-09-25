@@ -1,13 +1,13 @@
 // Quickgres browser library to parse raw PostgreSQL protocol (why do it on the server...)
 
-const Buffer = buffer.Buffer;
+import { Buffer } from 'buffer';
 
 function r32(buf, off){ return (buf[off] << 24) | (buf[off+1] << 16) | (buf[off+2] << 8) | buf[off+3]; } // Read a 32-bit big-endian int from buffer buf at offset off.
 function r16(buf, off){ return (buf[off] << 8) | buf[off+1]; } // Read a 16-bit big-endian int from buffer buf at offset off.
-function w32(buf, v, off) { buf[off]=(v>>24)&255; buf[off+1]=(v>>16)&255; buf[off+2]=(v>>8)&255; buf[off+3]=v&255; return off+4; } // Write a 32-bit big-endian int to buffer at offset and return the offset after it.
-function w16(buf, v, off) { buf[off]=(v>>8)&255; buf[off+1]=v&255; return off+2;} // Write a 16-bit big-endian int to buffer at offset and return the offset after it.
+// function w32(buf, v, off) { buf[off]=(v>>24)&255; buf[off+1]=(v>>16)&255; buf[off+2]=(v>>8)&255; buf[off+3]=v&255; return off+4; } // Write a 32-bit big-endian int to buffer at offset and return the offset after it.
+// function w16(buf, v, off) { buf[off]=(v>>8)&255; buf[off+1]=v&255; return off+2;} // Write a 16-bit big-endian int to buffer at offset and return the offset after it.
 
-class Client { // The Client class parses PostgreSQL protocol.
+export class Client { // The Client class parses PostgreSQL protocol.
 
     constructor(binary) { // Need to know if it's binary or not, binary is 0 or 1.
         this.stream = new RowReader(); // Create a new RowReader to read in the results
@@ -42,17 +42,18 @@ class Client { // The Client class parses PostgreSQL protocol.
 }
 
 
-class RowReader { // RowReader receives query result messages and converts them into query result rows.
+export class RowReader { // RowReader receives query result messages and converts them into query result rows.
 
-    constructor() { this.rows = [], this.cmd = this.oid = this.binary = this.rowParser = undefined, this.rowCount = 0; } // Set up initial state.
+    constructor() { this.rows = []; this.cmd = this.oid = this.binary = this.rowParser = undefined; this.rowCount = 0; } // Set up initial state.
 
     write(buf, off=0) { switch(buf[off++]) { // Receive a PostgreSQL protocol message buffer.
         case 68: this.rows.push(new (this.rowParser[this.binary])(buf)); break; // D -- DataRow -- Parse the row and store it to rows.
         case 100: this.rows.push(buf.slice(off+4, off + r32(buf, off))); break; // CopyData -- Slice the copy message payload and store it to rows.
         case 67: // C -- CommandComplete -- Parse the command complete message and set our completion state.
             const str = buf.toString('utf8', 5, 1 + r32(buf, 1)); // The CommandComplete is a string starting with the completed command name and followed by possible table OID and number of rows affected. 
+            // eslint-disable-next-line
             const [_, cmd, oid, rowCount] = str.match(/^(\S+)( \d+)?( \d+)\u0000/) || str.match(/^([^\u0000]*)\u0000/); // Parse out the command, table OID and rowCount. This deals with 'CMD oid rowCount', 'CMD rowCount' and 'CMD' cases.
-            this.cmd = cmd, this.oid = oid, this.rowCount = parseInt(rowCount || 0); // Store the parsed data and exit.
+            this.cmd = cmd; this.oid = oid; this.rowCount = parseInt(rowCount || 0); // Store the parsed data and exit.
             break;
         case 73: this.cmd = 'EMPTY'; break; // I -- EmptyQueryResult -- Command completion message for an empty query string.
         case 115: this.cmd = 'SUSPENDED'; break; // s -- PortalSuspended -- Completion message for a result batch from a partial results query.
@@ -64,15 +65,17 @@ class RowReader { // RowReader receives query result messages and converts them 
             this.format = buf[off+4]; off += 5; // Grab the global format code (0 = string, 1 = binary) and skip the message header.
             this.columnCount = r16(buf, off); off += 2; // Read the number of columns in the copy message.
             this.columnFormats = []; // Store the column formats in an array.
-            for (let i = 0; i < this.columnCount; i++) this.columnFormats[i] = r16(buf, off), off += 2; // Read the column formats (0 = string, 1 = binary.)
+            for (let i = 0; i < this.columnCount; i++) { this.columnFormats[i] = r16(buf, off); off += 2; } // Read the column formats (0 = string, 1 = binary.)
+            break;
+        default:
     } }
 }
 
 
-class RowParser { // RowParser parses DataRow buffers into objects and arrays.
+export class RowParser { // RowParser parses DataRow buffers into objects and arrays.
 
     constructor(buf, off=0) { // Create a new RowParser from a DataRow message buffer.
-        this.buf = buf, this.off = off, this.columns = [], this.columnNames = []; // Set up parsing state.
+        this.buf = buf; this.off = off; this.columns = []; this.columnNames = []; // Set up parsing state.
         const columnCount = r16(buf, off+5); off += 7; // Read in the array of column descriptions.
         for (let i = 0; i < columnCount; i++) { // Each column has a name, followed by table, type and format info.
             const nameEnd =  buf.indexOf(0, off); // The name is a C string so we find the null byte terminator.
@@ -111,7 +114,7 @@ class RowParser { // RowParser parses DataRow buffers into objects and arrays.
         }
         this[1] = function(buf) { this.rowBuffer = buf; }; // Binary row constructor just stores the DataRow buffer, it's parsed on access.
         this[1].prototype = Object.create(parserPrototype); // The prototype of the row stores the row description and methods to access columns. Note that all properties are camelCased to avoid name clashes with column names which are all lowercase.
-        this[1].prototype.dataFormat = 1, // The binary rows have a binary data format.
+        this[1].prototype.dataFormat = 1; // The binary rows have a binary data format.
         this[1].prototype.parseColumn = function(i, start, end) { // Parse a binary column, casts the column to a JS object.
             const parser = TypeParser[this.rowColumns[i].typeOid]; // Find a parser for the column type.
             return parser ? parser(this.rowBuffer, start, end) : this.rowBuffer.slice(start, end); // If there's a parser, use it, otherwise slice the buffer.
@@ -146,7 +149,15 @@ RowParser.parserPrototype = {
     }
 };
 
-TypeParser = {
+const toUtf8 = function(buf) {
+    if (typeof TextDecoder !== 'undefined') {
+        return new TextDecoder().decode(buf);
+    } else {
+        buf.toString();
+    }
+};
+
+export const TypeParser = {
     serialize: function(value) {
         if (value instanceof Buffer) return Buffer.from(value);
         const t = typeof value;
@@ -171,7 +182,7 @@ TypeParser = {
     16: (buf, start, end) => !!buf[start], // bool
     17: (buf, start, end) => buf.slice(start, end), // bytea
     18: (buf, start, end) => buf[start], // char
-    19: (buf, start, end) => buf.toString('utf8', start, buf.indexOf(0, start)), // name
+    19: (buf, start, end) => toUtf8(buf.slice(start, buf.indexOf(0, start))), // name
     20: (buf, start, end) => buf.readBigInt64BE(start), // int8
     21: (buf, start, end) => r16(buf, start), // int2
     // 22 int2vector
@@ -182,25 +193,28 @@ TypeParser = {
     // 1266 timetz
     1114: (buf, start, end) => { // 1114 timestamp
         const dv = new DataView(buf.buffer.slice(start, end));
-        const t = dv.getBigInt64(0, false) / 1000n + 946656000000n;
-        return new Date(Number(t));
+        const t = dv.getInt32(0, false);
+        const t2 = dv.getInt32(4, false);
+        return new Date((t * 4294967.296) + t2 / 1000 + 946656000000);
     },
     1184: (buf, start, end) => { // 1184 timestamptz
         const dv = new DataView(buf.buffer.slice(start, end));
-        const t = dv.getBigInt64(0, false) / 1000n + 946656000000n;
-        return new Date(Number(t));
+        const t = dv.getInt32(0, false);
+        const t2 = dv.getInt32(4, false);
+        return new Date((t * 4294967.296) + t2 / 1000 + 946656000000);
     },
     // 1186 interval
     2950: (buf, start, end) => { // 2950 uuid
         const hex = buf.slice(start, end).toString('hex');
         return hex.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
     },
-    25: (buf, start, end) => buf.toString('utf8', start, end), // text
+    25: (buf, start, end) => toUtf8(buf.slice(start, end)), // text
     26: (buf, start, end) => r32(buf, start), // oid
-    114: (buf, start, end) => JSON.parse(buf.toString('utf8', start, end)), // json
-    142: (buf, start, end) => buf.toString('utf8', start, end), // xml
+    114: (buf, start, end) => JSON.parse(toUtf8(buf.slice(start, end))), // json
+    142: (buf, start, end) => toUtf8(buf.slice(start, end)), // xml
     700: (buf, start, end) => buf.readFloatBE(start), // float4
     701: (buf, start, end) => buf.readDoubleBE(start), // float8
-    1043: (buf, start, end) => buf.toString('utf8', start, end), // varchar
-    3802: (buf, start, end) => JSON.parse(buf.toString('binary', start+1, end)) // jsonb
+    1043: (buf, start, end) => toUtf8(buf.slice(start, end)), // varchar
+    3802: (buf, start, end) => JSON.parse(toUtf8(buf.slice(start+1, end))) // jsonb
 };
+
