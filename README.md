@@ -1,6 +1,6 @@
-# Qframe 0.10.0
+# Qframe 0.11.0
 
-Front-end friendly JSON API server in 300 lines of code.
+Front-end friendly JSON API server in 400 lines of code.
 Ideal for use with something like `create-react-app`.
 
 Uses PostgreSQL as the database.
@@ -253,3 +253,12 @@ Edit `postgresql.conf` and set `max_connections` to `1000`.
  * JSON object shape validation.
  * Changed /_/user/edit to be a single endpoint rather than a subtree.
     
+
+## License
+
+MIT
+
+
+## Support
+
+Heichen Ltd at hei@heichen.hk
